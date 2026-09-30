@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Foxford XP Web Helper</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <div class="brand"><span>✦</span><div><h1>XP без API-ключа</h1><p>Выберите обычный веб-чат</p></div></div>
+      <label for="service">Куда отправлять подготовленный запрос</label>
+      <select id="service">
+        <option value="chatgpt">ChatGPT</option>
+        <option value="gemini">Google Gemini</option>
+        <option value="alice">Алиса AI</option>
+      </select>
+      <button id="save" type="button">Сохранить</button>
+      <p id="status" role="status"></p>
+      <div class="notice">Расширение не получает логин или пароль. Оно копирует подготовленный запрос и открывает выбранный сайт. Вам останется вставить текст и нажать отправку.</div>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
