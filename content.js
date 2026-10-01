@@ -47,6 +47,9 @@
   }
 
   function findQuestion() {
+    const homework = extractHomework();
+    if (homework) return homework;
+
     let best = null;
     let bestScore = 74;
     for (const element of document.querySelectorAll(CANDIDATES.join(","))) {
@@ -56,11 +59,54 @@
     return best ? extract(best) : "";
   }
 
+  function extractHomework() {
+    if (!/^\/lessons\/[^/]+\/tasks\/[^/]+/.test(location.pathname)) return "";
+    const content = document.querySelector("#taskContentInTaskView");
+    if (!content || !visible(content)) return "";
+
+    const condition = clean(content.innerText || content.textContent);
+    if (condition.length < 8) return "";
+    const form = document.querySelector("#taskForm") || content.parentElement?.querySelector("form");
+    const details = extractAnswerDetails(form);
+    return clean([`Условие:\n${condition}`, details.options, details.mode].filter(Boolean).join("\n\n")).slice(0, 8000);
+  }
+
+  function extractAnswerDetails(form) {
+    if (!form) return { options: "", mode: "Формат ответа: свободный ответ." };
+    const radios = [...form.querySelectorAll('input[type="radio"], [role="radio"]')];
+    const checks = [...form.querySelectorAll('input[type="checkbox"], [role="checkbox"]')];
+    const selects = [...form.querySelectorAll("select")];
+    const textInputs = [...form.querySelectorAll('input[type="text"], input:not([type]), textarea')];
+    const multiSelect = selects.some((select) => select.multiple || select.getAttribute("aria-multiselectable") === "true");
+
+    let mode = "Формат ответа: свободный ответ.";
+    if (checks.length || multiSelect) mode = "Формат ответа: можно выбрать несколько вариантов.";
+    else if (radios.length || selects.length) mode = "Формат ответа: можно выбрать только один вариант.";
+    else if (!textInputs.length) mode = "Формат ответа на странице не удалось определить.";
+
+    const optionTexts = [];
+    const add = (value) => {
+      const text = clean(value);
+      if (text && !optionTexts.includes(text)) optionTexts.push(text);
+    };
+    [...radios, ...checks].forEach((control) => {
+      const label = control.closest("label") || (control.id ? form.querySelector(`label[for="${CSS.escape(control.id)}"]`) : null);
+      add(label?.innerText || control.getAttribute("aria-label") || control.textContent);
+    });
+    selects.forEach((select) => [...select.options].filter((option) => !option.disabled && option.value).forEach((option) => add(option.textContent)));
+    form.querySelectorAll('[role="option"], [data-testid*="answer"], [class*="answerOption" i]').forEach((option) => add(option.innerText || option.textContent));
+
+    return {
+      options: optionTexts.length ? `Варианты ответа:\n${optionTexts.map((text, index) => `${index + 1}. ${text}`).join("\n")}` : "",
+      mode
+    };
+  }
+
   function promptFor(mode) {
     const request = mode === "hint"
       ? "Дай 2–4 наводящие подсказки. Не называй готовый ответ, номер или букву правильного варианта и не доводи вычисление до финального результата."
       : "Реши задание пошагово и понятно. В конце отдельной строкой напиши итоговый ответ.";
-    return `Помоги школьнику с заданием Фоксфорда. Отвечай по-русски. ${request}\n\nЗадание:\n${question}`;
+    return `Помоги школьнику с заданием Фоксфорда. Отвечай по-русски. ${request}\nЕсли перечислены варианты ответа, обязательно учитывай их и правило о том, можно выбрать один вариант или несколько.\n\nЗадание:\n${question}`;
   }
 
   async function copyText(text) {
@@ -82,11 +128,11 @@
   function makePanel() {
     const panel = document.createElement("section");
     panel.id = PANEL_ID;
-    panel.setAttribute("aria-label", "Помощник по XP без API");
+    panel.setAttribute("aria-label", "Помощник по заданиям без API");
     panel.innerHTML = `
       <div class="foxweb-head">
         <div class="foxweb-logo" aria-hidden="true">✦</div>
-        <div><div class="foxweb-title">XP без API-ключа</div><div class="foxweb-status">Задание найдено</div></div>
+        <div><div class="foxweb-title">Задания без API-ключа</div><div class="foxweb-status">Задание найдено</div></div>
         <button class="foxweb-close" type="button" aria-label="Скрыть">×</button>
       </div>
       <div class="foxweb-body">
@@ -123,12 +169,18 @@
       showMessage("Не удалось скопировать запрос. Разрешите браузеру доступ к буферу обмена.", true);
       return;
     }
-    const response = await chrome.runtime.sendMessage({ type: "FOXWEB_OPEN" });
+    const response = await chrome.runtime.sendMessage({ type: "FOXWEB_OPEN", prompt: lastPrompt });
     if (!response?.ok) {
       showMessage(response?.error || "Не удалось открыть веб-чат.", true);
       return;
     }
-    showMessage("Веб-чат открыт, запрос скопирован. Вставьте его в поле сообщения и отправьте.");
+    if (response.inserted) {
+      showMessage("Запрос вставлен в Алису. Перейдите в её вкладку, проверьте текст и нажмите отправку.");
+    } else if (response.opened) {
+      showMessage("Алиса открыта. Запрос вставится после загрузки страницы; проверьте его и нажмите отправку.");
+    } else {
+      showMessage("Веб-чат открыт, запрос скопирован. Вставьте его в поле сообщения и отправьте.");
+    }
     document.querySelector(`#${PANEL_ID} .foxweb-copy`).dataset.visible = "true";
   }
 
