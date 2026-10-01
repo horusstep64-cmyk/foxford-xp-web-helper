@@ -61,10 +61,18 @@
 
   function extractHomework() {
     if (!/^\/lessons\/[^/]+\/tasks\/[^/]+/.test(location.pathname)) return "";
-    const content = document.querySelector("#taskContentInTaskView");
+    const content = document.querySelector([
+      "#taskContentInTaskView",
+      '[data-testid="task-content"]',
+      '[data-testid*="taskContent"]',
+      '[class*="InteractiveContent"]'
+    ].join(","));
     if (!content || !visible(content)) return "";
 
-    const condition = clean(content.innerText || content.textContent);
+    const imageDescriptions = [...content.querySelectorAll("img[alt]")]
+      .map((image) => clean(image.alt))
+      .filter((text) => text && !/^image|изображение$/i.test(text));
+    const condition = clean([content.innerText || content.textContent, ...imageDescriptions].filter(Boolean).join("\n"));
     if (condition.length < 8) return "";
     const form = document.querySelector("#taskForm") || content.parentElement?.querySelector("form");
     const details = extractAnswerDetails(form);
@@ -102,11 +110,19 @@
     };
   }
 
-  function promptFor(mode) {
+  function promptFor(mode, taskText) {
     const request = mode === "hint"
       ? "Дай 2–4 наводящие подсказки. Не называй готовый ответ, номер или букву правильного варианта и не доводи вычисление до финального результата."
       : "Реши задание пошагово и понятно. В конце отдельной строкой напиши итоговый ответ.";
-    return `Помоги школьнику с заданием Фоксфорда. Отвечай по-русски. ${request}\nЕсли перечислены варианты ответа, обязательно учитывай их и правило о том, можно выбрать один вариант или несколько.\n\nЗадание:\n${question}`;
+    return [
+      "Помоги школьнику с заданием Фоксфорда. Отвечай по-русски.",
+      request,
+      "Если перечислены варианты ответа, обязательно учитывай их и правило о том, можно выбрать один вариант или несколько.",
+      "",
+      "===== УСЛОВИЕ ЗАДАЧИ =====",
+      taskText,
+      "===== КОНЕЦ УСЛОВИЯ ====="
+    ].join("\n");
   }
 
   async function copyText(text) {
@@ -163,7 +179,13 @@
   }
 
   async function launch(mode) {
-    lastPrompt = promptFor(mode);
+    const freshQuestion = findQuestion();
+    if (freshQuestion.length < 8) {
+      showMessage("Не удалось прочитать условие задачи. Откройте саму задачу и попробуйте ещё раз.", true);
+      return;
+    }
+    question = freshQuestion;
+    lastPrompt = promptFor(mode, freshQuestion);
     const copied = await copyText(lastPrompt);
     if (!copied) {
       showMessage("Не удалось скопировать запрос. Разрешите браузеру доступ к буферу обмена.", true);

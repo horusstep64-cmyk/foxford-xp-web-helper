@@ -14,12 +14,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 async function openSelectedService(prompt) {
+  const cleanPrompt = String(prompt || "").trim();
+  if (!cleanPrompt.includes("===== УСЛОВИЕ ЗАДАЧИ =====") || !cleanPrompt.includes("===== КОНЕЦ УСЛОВИЯ =====")) {
+    throw new Error("Условие задачи не попало в запрос. Обновите страницу Фоксфорда и попробуйте ещё раз.");
+  }
   const { service = "chatgpt" } = await chrome.storage.local.get("service");
   const url = SERVICE_URLS[service];
   if (!url) throw new Error("Выберите поддерживаемый веб-чат в настройках.");
 
   if (service === "alice") {
-    return insertIntoAlice(String(prompt || ""));
+    return insertIntoAlice(cleanPrompt);
   }
 
   await chrome.tabs.create({ url });
