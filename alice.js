@@ -38,7 +38,37 @@
     });
   }
 
-  async function insertPrompt(prompt) {
+  async function fileFromDataUrl(dataUrl) {
+    const response = await fetch(dataUrl);
+    const blob = await response.blob();
+    return new File([blob], "foxford-task.png", { type: "image/png" });
+  }
+
+  async function attachImage(input, imageDataUrl) {
+    if (!String(imageDataUrl || "").startsWith("data:image/png;base64,")) {
+      throw new Error("Снимок задачи отсутствует.");
+    }
+    const file = await fileFromDataUrl(imageDataUrl);
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+
+    const fileInput = [...document.querySelectorAll('input[type="file"]')]
+      .find((element) => !element.disabled && (!element.accept || /image|png|jpeg|jpg/i.test(element.accept)));
+    if (fileInput) {
+      fileInput.files = transfer.files;
+      fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+      return;
+    }
+
+    const pasteEvent = new ClipboardEvent("paste", {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: transfer
+    });
+    input.dispatchEvent(pasteEvent);
+  }
+
+  async function insertPrompt(prompt, imageDataUrl) {
     const input = await waitForInput();
     input.focus();
     if (input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement) {
@@ -51,20 +81,21 @@
     }
     input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: prompt }));
     input.dispatchEvent(new Event("change", { bubbles: true }));
+    await attachImage(input, imageDataUrl);
     return true;
   }
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type !== "FOXWEB_INSERT_ALICE") return false;
-    insertPrompt(String(message.prompt || ""))
+    insertPrompt(String(message.prompt || ""), message.imageDataUrl)
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
     return true;
   });
 
-  chrome.storage.local.get("pendingAlicePrompt").then(async ({ pendingAlicePrompt }) => {
-    if (!pendingAlicePrompt) return;
-    await insertPrompt(pendingAlicePrompt);
-    await chrome.storage.local.remove("pendingAlicePrompt");
+  chrome.storage.local.get("pendingAliceRequest").then(async ({ pendingAliceRequest }) => {
+    if (!pendingAliceRequest?.prompt || !pendingAliceRequest?.imageDataUrl) return;
+    await insertPrompt(pendingAliceRequest.prompt, pendingAliceRequest.imageDataUrl);
+    await chrome.storage.local.remove("pendingAliceRequest");
   }).catch(() => {});
 })();

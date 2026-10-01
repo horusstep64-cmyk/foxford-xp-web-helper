@@ -59,6 +59,25 @@
     return best ? extract(best) : "";
   }
 
+  function findCaptureTarget() {
+    if (/^\/lessons\/[^/]+\/tasks\/[^/]+/.test(location.pathname)) {
+      return document.querySelector([
+        "#taskContentInTaskView",
+        '[data-testid="task-content"]',
+        '[data-testid*="taskContent"]',
+        '[class*="InteractiveContent"]'
+      ].join(","));
+    }
+
+    let best = null;
+    let bestScore = 74;
+    for (const element of document.querySelectorAll(CANDIDATES.join(","))) {
+      const value = score(element);
+      if (value > bestScore) { best = element; bestScore = value; }
+    }
+    return best;
+  }
+
   function extractHomework() {
     if (!/^\/lessons\/[^/]+\/tasks\/[^/]+/.test(location.pathname)) return "";
     const content = document.querySelector([
@@ -119,10 +138,43 @@
       request,
       "Если перечислены варианты ответа, обязательно учитывай их и правило о том, можно выбрать один вариант или несколько.",
       "",
-      "===== УСЛОВИЕ ЗАДАЧИ =====",
+      "К сообщению прикреплён снимок только области задачи. Обязательно прочитай формулы, рисунки и обозначения на изображении.",
+      "",
+      "===== ОПИСАНИЕ ЗАДАЧИ =====",
       taskText,
-      "===== КОНЕЦ УСЛОВИЯ ====="
+      "===== КОНЕЦ ОПИСАНИЯ ====="
     ].join("\n");
+  }
+
+  async function captureTaskImage() {
+    const target = findCaptureTarget();
+    if (!target || !visible(target)) throw new Error("Не удалось найти видимую область задачи для снимка.");
+    const panel = document.getElementById(PANEL_ID);
+    const previousVisibility = panel?.style.visibility || "";
+    target.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    if (panel) panel.style.visibility = "hidden";
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    try {
+      const rect = target.getBoundingClientRect();
+      const visibleRect = {
+        left: Math.max(0, rect.left),
+        top: Math.max(0, rect.top),
+        width: Math.min(innerWidth, rect.right) - Math.max(0, rect.left),
+        height: Math.min(innerHeight, rect.bottom) - Math.max(0, rect.top)
+      };
+      const response = await chrome.runtime.sendMessage({
+        type: "FOXWEB_CAPTURE_TASK",
+        capture: {
+          rect: visibleRect,
+          viewport: { width: innerWidth, height: innerHeight }
+        }
+      });
+      if (!response?.ok) throw new Error(response?.error || "Не удалось сделать снимок задачи.");
+      return response.imageDataUrl;
+    } finally {
+      if (panel) panel.style.visibility = previousVisibility;
+    }
   }
 
   async function copyText(text) {
@@ -186,18 +238,26 @@
     }
     question = freshQuestion;
     lastPrompt = promptFor(mode, freshQuestion);
+    let imageDataUrl;
+    try {
+      showMessage("Делаю снимок области задачи…");
+      imageDataUrl = await captureTaskImage();
+    } catch (error) {
+      showMessage(String(error?.message || error), true);
+      return;
+    }
     const copied = await copyText(lastPrompt);
     if (!copied) {
       showMessage("Не удалось скопировать запрос. Разрешите браузеру доступ к буферу обмена.", true);
       return;
     }
-    const response = await chrome.runtime.sendMessage({ type: "FOXWEB_OPEN", prompt: lastPrompt });
+    const response = await chrome.runtime.sendMessage({ type: "FOXWEB_OPEN", prompt: lastPrompt, imageDataUrl });
     if (!response?.ok) {
       showMessage(response?.error || "Не удалось открыть веб-чат.", true);
       return;
     }
     if (response.inserted) {
-      showMessage("Запрос вставлен в Алису. Перейдите в её вкладку, проверьте текст и нажмите отправку.");
+      showMessage("Снимок задачи и описание вставлены в Алису. Проверьте их и нажмите отправку.");
     } else if (response.opened) {
       showMessage("Алиса открыта. Запрос вставится после загрузки страницы; проверьте его и нажмите отправку.");
     } else {
