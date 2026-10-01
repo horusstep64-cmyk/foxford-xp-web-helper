@@ -11,6 +11,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
     return true;
   }
+  if (message?.type === "FOXWEB_STITCH_TASK") {
+    stitchTask(message.segments, message.target)
+      .then((imageDataUrl) => sendResponse({ ok: true, imageDataUrl }))
+      .catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
+    return true;
+  }
   if (message?.type !== "FOXWEB_OPEN") return false;
 
   openSelectedService(message.prompt, message.imageDataUrl)
@@ -103,4 +109,38 @@ async function blobToDataUrl(blob) {
     binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
   }
   return `data:${blob.type};base64,${btoa(binary)}`;
+}
+
+async function stitchTask(segments, target) {
+  if (!Array.isArray(segments) || !segments.length || !target?.width || !target?.height) {
+    throw new Error("Не удалось собрать полный снимок задачи.");
+  }
+  const decoded = [];
+  for (const segment of segments) {
+    const blob = await (await fetch(segment.imageDataUrl)).blob();
+    decoded.push({ ...segment, bitmap: await createImageBitmap(blob) });
+  }
+
+  const first = decoded[0];
+  let scale = first.bitmap.width / first.cssWidth;
+  const maxOutputHeight = 5000;
+  if (target.height * scale > maxOutputHeight) scale = maxOutputHeight / target.height;
+  const outputWidth = Math.max(1, Math.round(target.width * scale));
+  const outputHeight = Math.max(1, Math.round(target.height * scale));
+  const canvas = new OffscreenCanvas(outputWidth, outputHeight);
+  const context = canvas.getContext("2d");
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, outputWidth, outputHeight);
+
+  for (const segment of decoded) {
+    const destinationY = Math.max(0, Math.round(segment.top * scale));
+    const destinationHeight = Math.min(outputHeight - destinationY, Math.round(segment.cssHeight * scale));
+    if (destinationHeight > 0) {
+      context.drawImage(segment.bitmap, 0, 0, segment.bitmap.width, segment.bitmap.height, 0, destinationY, outputWidth, destinationHeight);
+    }
+    segment.bitmap.close();
+  }
+
+  const stitched = await canvas.convertToBlob({ type: "image/png" });
+  return blobToDataUrl(stitched);
 }

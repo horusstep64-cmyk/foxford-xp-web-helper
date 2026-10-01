@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Foxford XP Web Helper",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Prepares Foxford XP and homework hints for web AI chats without API keys.",
   "permissions": ["storage", "tabs", "scripting"],
   "host_permissions": ["<all_urls>"],

@@ -61,12 +61,14 @@
 
   function findCaptureTarget() {
     if (/^\/lessons\/[^/]+\/tasks\/[^/]+/.test(location.pathname)) {
-      return document.querySelector([
+      const content = document.querySelector([
         "#taskContentInTaskView",
         '[data-testid="task-content"]',
         '[data-testid*="taskContent"]',
         '[class*="InteractiveContent"]'
       ].join(","));
+      const form = document.querySelector("#taskForm") || content?.parentElement?.querySelector("form");
+      return commonAncestor(content, form) || content;
     }
 
     let best = null;
@@ -75,7 +77,30 @@
       const value = score(element);
       if (value > bestScore) { best = element; bestScore = value; }
     }
-    return best;
+    return expandToAnswers(best);
+  }
+
+  function commonAncestor(first, second) {
+    if (!first) return null;
+    if (!second) return first;
+    let current = first;
+    while (current && !current.contains(second)) current = current.parentElement;
+    return current;
+  }
+
+  function expandToAnswers(seed) {
+    if (!seed) return null;
+    let selected = seed;
+    let current = seed;
+    for (let depth = 0; current?.parentElement && depth < 6; depth += 1) {
+      current = current.parentElement;
+      const text = clean(current.innerText || current.textContent);
+      const hasAnswers = current.querySelector('input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"], [role="option"], select');
+      const rect = current.getBoundingClientRect();
+      if (hasAnswers && text.length < 16000 && rect.width <= innerWidth * 1.1) selected = current;
+      if (rect.width > innerWidth * 1.25 || text.length >= 16000) break;
+    }
+    return selected;
   }
 
   function extractHomework() {
@@ -149,32 +174,89 @@
   async function captureTaskImage() {
     const target = findCaptureTarget();
     if (!target || !visible(target)) throw new Error("Не удалось найти видимую область задачи для снимка.");
+    const targetRect = target.getBoundingClientRect();
+    if (targetRect.height > 10000) throw new Error("Окно задачи слишком длинное для одного снимка.");
+
+    const scroller = findScrollContainer(target);
+    const documentScroller = document.scrollingElement || document.documentElement;
+    const usesDocument = scroller === documentScroller;
+    const initialScroll = usesDocument ? window.scrollY : scroller.scrollTop;
+    const scrollerRect = usesDocument ? { top: 0 } : scroller.getBoundingClientRect();
+    const targetStart = usesDocument
+      ? targetRect.top + window.scrollY
+      : targetRect.top - scrollerRect.top + scroller.scrollTop;
     const panel = document.getElementById(PANEL_ID);
     const previousVisibility = panel?.style.visibility || "";
-    target.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
-    await new Promise((resolve) => setTimeout(resolve, 180));
     if (panel) panel.style.visibility = "hidden";
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     try {
-      const rect = target.getBoundingClientRect();
-      const visibleRect = {
-        left: Math.max(0, rect.left),
-        top: Math.max(0, rect.top),
-        width: Math.min(innerWidth, rect.right) - Math.max(0, rect.left),
-        height: Math.min(innerHeight, rect.bottom) - Math.max(0, rect.top)
-      };
-      const response = await chrome.runtime.sendMessage({
-        type: "FOXWEB_CAPTURE_TASK",
-        capture: {
-          rect: visibleRect,
-          viewport: { width: innerWidth, height: innerHeight }
-        }
+      const segments = [];
+      let covered = 0;
+      for (let part = 0; part < 12 && covered < targetRect.height - 2; part += 1) {
+        if (usesDocument) window.scrollTo({ top: targetStart + covered, left: window.scrollX, behavior: "instant" });
+        else scroller.scrollTop = targetStart + covered;
+        await new Promise((resolve) => setTimeout(resolve, part ? 560 : 220));
+
+        const rect = target.getBoundingClientRect();
+        const bounds = usesDocument
+          ? { left: 0, top: 0, right: innerWidth, bottom: innerHeight }
+          : (() => {
+              const current = scroller.getBoundingClientRect();
+              return {
+                left: Math.max(0, current.left),
+                top: Math.max(0, current.top),
+                right: Math.min(innerWidth, current.right),
+                bottom: Math.min(innerHeight, current.bottom)
+              };
+            })();
+        const left = Math.max(bounds.left, rect.left);
+        const top = Math.max(bounds.top, rect.top);
+        const right = Math.min(bounds.right, rect.right);
+        const bottom = Math.min(bounds.bottom, rect.bottom);
+        const cssWidth = right - left;
+        const cssHeight = bottom - top;
+        const segmentTop = Math.max(0, top - rect.top);
+        if (cssWidth < 40 || cssHeight < 30) throw new Error("Часть окна задачи не видна на экране.");
+
+        const response = await chrome.runtime.sendMessage({
+          type: "FOXWEB_CAPTURE_TASK",
+          capture: {
+            rect: { left, top, width: cssWidth, height: cssHeight },
+            viewport: { width: innerWidth, height: innerHeight }
+          }
+        });
+        if (!response?.ok) throw new Error(response?.error || "Не удалось сделать часть снимка задачи.");
+        segments.push({ imageDataUrl: response.imageDataUrl, top: segmentTop, cssWidth, cssHeight });
+        const nextCovered = segmentTop + cssHeight;
+        if (nextCovered <= covered + 2) break;
+        covered = nextCovered;
+      }
+
+      if (covered < targetRect.height - 8) {
+        throw new Error("Не удалось захватить окно задачи целиком. Прокрутите его к началу и повторите.");
+      }
+      const stitched = await chrome.runtime.sendMessage({
+        type: "FOXWEB_STITCH_TASK",
+        segments,
+        target: { width: targetRect.width, height: targetRect.height }
       });
-      if (!response?.ok) throw new Error(response?.error || "Не удалось сделать снимок задачи.");
-      return response.imageDataUrl;
+      if (!stitched?.ok) throw new Error(stitched?.error || "Не удалось склеить полный снимок задачи.");
+      return stitched.imageDataUrl;
     } finally {
+      if (usesDocument) window.scrollTo({ top: initialScroll, left: window.scrollX, behavior: "instant" });
+      else scroller.scrollTop = initialScroll;
       if (panel) panel.style.visibility = previousVisibility;
     }
+  }
+
+  function findScrollContainer(element) {
+    let current = element.parentElement;
+    while (current && current !== document.body && current !== document.documentElement) {
+      const style = getComputedStyle(current);
+      if (/(auto|scroll)/.test(style.overflowY) && current.scrollHeight > current.clientHeight + 5) return current;
+      current = current.parentElement;
+    }
+    return document.scrollingElement || document.documentElement;
   }
 
   async function copyText(text) {
