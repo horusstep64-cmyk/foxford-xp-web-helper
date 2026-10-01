@@ -90,15 +90,17 @@
 
   function expandToAnswers(seed) {
     if (!seed) return null;
+    const dialog = seed.closest('[role="dialog"], [aria-modal="true"]');
+    if (dialog && visible(dialog) && clean(dialog.innerText || dialog.textContent).length < 20000) return dialog;
     let selected = seed;
     let current = seed;
-    for (let depth = 0; current?.parentElement && depth < 6; depth += 1) {
+    for (let depth = 0; current?.parentElement && depth < 10; depth += 1) {
       current = current.parentElement;
       const text = clean(current.innerText || current.textContent);
-      const hasAnswers = current.querySelector('input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"], [role="option"], select');
+      const answerCount = current.querySelectorAll('input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"], [role="option"], select').length;
       const rect = current.getBoundingClientRect();
-      if (hasAnswers && text.length < 16000 && rect.width <= innerWidth * 1.1) selected = current;
-      if (rect.width > innerWidth * 1.25 || text.length >= 16000) break;
+      if (answerCount && text.length < 20000 && rect.width <= innerWidth * 1.15) selected = current;
+      if (rect.width > innerWidth * 1.3 || text.length >= 20000) break;
     }
     return selected;
   }
@@ -176,15 +178,20 @@
     if (!target || !visible(target)) throw new Error("Не удалось найти видимую область задачи для снимка.");
     const targetRect = target.getBoundingClientRect();
     if (targetRect.height > 10000) throw new Error("Окно задачи слишком длинное для одного снимка.");
+    const verticalPadding = 16;
+    const overlap = 48;
+    const paddedHeight = targetRect.height + verticalPadding * 2;
 
     const scroller = findScrollContainer(target);
     const documentScroller = document.scrollingElement || document.documentElement;
     const usesDocument = scroller === documentScroller;
+    const safeTopInset = usesDocument ? usesSafeTopInset() : 12;
     const initialScroll = usesDocument ? window.scrollY : scroller.scrollTop;
     const scrollerRect = usesDocument ? { top: 0 } : scroller.getBoundingClientRect();
     const targetStart = usesDocument
       ? targetRect.top + window.scrollY
       : targetRect.top - scrollerRect.top + scroller.scrollTop;
+    const paddedStart = targetStart - verticalPadding;
     const panel = document.getElementById(PANEL_ID);
     const previousVisibility = panel?.style.visibility || "";
     if (panel) panel.style.visibility = "hidden";
@@ -192,30 +199,34 @@
     try {
       const segments = [];
       let covered = 0;
-      for (let part = 0; part < 12 && covered < targetRect.height - 2; part += 1) {
-        if (usesDocument) window.scrollTo({ top: targetStart + covered, left: window.scrollX, behavior: "instant" });
-        else scroller.scrollTop = targetStart + covered;
+      for (let part = 0; part < 16 && covered < paddedHeight - 2; part += 1) {
+        const segmentStart = part ? Math.max(0, covered - overlap) : 0;
+        const requestedScroll = paddedStart + segmentStart - safeTopInset;
+        if (usesDocument) window.scrollTo({ top: requestedScroll, left: window.scrollX, behavior: "instant" });
+        else scroller.scrollTop = requestedScroll;
         await new Promise((resolve) => setTimeout(resolve, part ? 560 : 220));
 
         const rect = target.getBoundingClientRect();
         const bounds = usesDocument
-          ? { left: 0, top: 0, right: innerWidth, bottom: innerHeight }
+          ? { left: 0, top: safeTopInset, right: innerWidth, bottom: innerHeight - 12 }
           : (() => {
               const current = scroller.getBoundingClientRect();
               return {
                 left: Math.max(0, current.left),
-                top: Math.max(0, current.top),
+                top: Math.max(0, current.top) + safeTopInset,
                 right: Math.min(innerWidth, current.right),
-                bottom: Math.min(innerHeight, current.bottom)
+                bottom: Math.min(innerHeight, current.bottom) - 12
               };
             })();
         const left = Math.max(bounds.left, rect.left);
-        const top = Math.max(bounds.top, rect.top);
+        const paddedRectTop = rect.top - verticalPadding;
+        const paddedRectBottom = rect.bottom + verticalPadding;
+        const top = Math.max(bounds.top, paddedRectTop);
         const right = Math.min(bounds.right, rect.right);
-        const bottom = Math.min(bounds.bottom, rect.bottom);
+        const bottom = Math.min(bounds.bottom, paddedRectBottom);
         const cssWidth = right - left;
         const cssHeight = bottom - top;
-        const segmentTop = Math.max(0, top - rect.top);
+        const segmentTop = Math.max(0, top - paddedRectTop);
         if (cssWidth < 40 || cssHeight < 30) throw new Error("Часть окна задачи не видна на экране.");
 
         const response = await chrome.runtime.sendMessage({
@@ -227,18 +238,18 @@
         });
         if (!response?.ok) throw new Error(response?.error || "Не удалось сделать часть снимка задачи.");
         segments.push({ imageDataUrl: response.imageDataUrl, top: segmentTop, cssWidth, cssHeight });
-        const nextCovered = segmentTop + cssHeight;
+        const nextCovered = Math.max(covered, segmentTop + cssHeight);
         if (nextCovered <= covered + 2) break;
         covered = nextCovered;
       }
 
-      if (covered < targetRect.height - 8) {
+      if (covered < paddedHeight - 8) {
         throw new Error("Не удалось захватить окно задачи целиком. Прокрутите его к началу и повторите.");
       }
       const stitched = await chrome.runtime.sendMessage({
         type: "FOXWEB_STITCH_TASK",
         segments,
-        target: { width: targetRect.width, height: targetRect.height }
+        target: { width: targetRect.width, height: paddedHeight }
       });
       if (!stitched?.ok) throw new Error(stitched?.error || "Не удалось склеить полный снимок задачи.");
       return stitched.imageDataUrl;
@@ -257,6 +268,10 @@
       current = current.parentElement;
     }
     return document.scrollingElement || document.documentElement;
+  }
+
+  function usesSafeTopInset() {
+    return Math.min(96, Math.max(64, Math.round(innerHeight * 0.12)));
   }
 
   async function copyText(text) {
