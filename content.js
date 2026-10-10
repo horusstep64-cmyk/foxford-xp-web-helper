@@ -1,6 +1,7 @@
 (() => {
   const PANEL_ID = "foxweb-helper";
   const CANDIDATES = [
+    '[role="dialog"]', '[aria-modal="true"]',
     '[data-testid*="question"]', '[data-testid*="task"]', '[data-testid*="poll"]',
     '[class*="Question"]', '[class*="question"]', '[class*="Task"]',
     '[class*="task"]', '[class*="Poll"]', '[class*="poll"]'
@@ -37,11 +38,16 @@
   function score(element) {
     if (!visible(element) || BLOCKED.some((selector) => element.closest(selector))) return -1;
     const text = extract(element);
-    if (text.length < 8 || text.length > 12000) return -1;
-    const controls = element.querySelectorAll('input[type="radio"], input[type="checkbox"], textarea, select, button').length;
-    let value = Math.min(text.length, 900) / 20 + Math.min(controls, 8) * 15;
-    if (/xp|задач|вопрос|ответ|выберите|решите|найдите|укажите|сколько|чему/i.test(text)) value += 30;
+    const media = element.querySelectorAll('img, canvas, video').length;
+    const answerControls = element.querySelectorAll('input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"], [role="option"], textarea, select').length;
+    const buttons = element.querySelectorAll("button").length;
+    const hasTaskWords = /xp|задач|вопрос|ответ|выберите|решите|найдите|укажите|сколько|чему/i.test(text);
+    if ((!hasTaskWords && !media && !answerControls) || text.length > 20000) return -1;
+    let value = Math.min(text.length, 900) / 20 + Math.min(answerControls, 8) * 18 + Math.min(buttons, 4) * 3;
+    value += Math.min(media, 4) * 12;
+    if (hasTaskWords) value += 30;
     if (element.matches('[data-testid*="question"], [data-testid*="task"], [data-testid*="poll"]')) value += 35;
+    if (element.matches('[role="dialog"], [aria-modal="true"]')) value += 45;
     if (element.getBoundingClientRect().height > innerHeight * .9) value -= 50;
     return value;
   }
@@ -49,14 +55,7 @@
   function findQuestion() {
     const homework = extractHomework();
     if (homework) return homework;
-
-    let best = null;
-    let bestScore = 74;
-    for (const element of document.querySelectorAll(CANDIDATES.join(","))) {
-      const value = score(element);
-      if (value > bestScore) { best = element; bestScore = value; }
-    }
-    return best ? extract(best) : "";
+    return extractXpTask();
   }
 
   function findCaptureTarget() {
@@ -71,13 +70,38 @@
       return commonAncestor(content, form) || content;
     }
 
+    return findXpTarget();
+  }
+
+  function findXpTarget() {
+    if (!/\/groups\/|\/webinar(?:-foxford)?\//.test(location.pathname)) return null;
     let best = null;
     let bestScore = 74;
+    const seen = new Set();
     for (const element of document.querySelectorAll(CANDIDATES.join(","))) {
-      const value = score(element);
-      if (value > bestScore) { best = element; bestScore = value; }
+      if (BLOCKED.some((selector) => element.closest(selector))) continue;
+      const expanded = expandToAnswers(element);
+      if (!expanded || seen.has(expanded)) continue;
+      seen.add(expanded);
+      const value = score(expanded);
+      if (value > bestScore) { best = expanded; bestScore = value; }
     }
-    return expandToAnswers(best);
+    return best;
+  }
+
+  function extractXpTask() {
+    const root = findXpTarget();
+    if (!root) return "";
+    const text = extract(root);
+    const details = extractAnswerDetails(root);
+    const hasVisual = Boolean(root.querySelector("img, svg, canvas"));
+    const condition = text || (hasVisual ? "Условие XP-задания находится на приложенном снимке." : "");
+    if (!condition) return "";
+    return clean([
+      `XP-задание на уроке.\n${condition}`,
+      details.options,
+      details.mode
+    ].filter(Boolean).join("\n\n")).slice(0, 8000);
   }
 
   function commonAncestor(first, second) {
@@ -131,7 +155,9 @@
     const checks = [...form.querySelectorAll('input[type="checkbox"], [role="checkbox"]')];
     const selects = [...form.querySelectorAll("select")];
     const textInputs = [...form.querySelectorAll('input[type="text"], input:not([type]), textarea')];
-    const multiSelect = selects.some((select) => select.multiple || select.getAttribute("aria-multiselectable") === "true");
+    const multiSelect = selects.some((select) => select.multiple || select.getAttribute("aria-multiselectable") === "true")
+      || form.getAttribute?.("aria-multiselectable") === "true"
+      || Boolean(form.querySelector('[aria-multiselectable="true"]'));
 
     let mode = "Формат ответа: свободный ответ.";
     if (checks.length || multiSelect) mode = "Формат ответа: можно выбрать несколько вариантов.";
@@ -148,7 +174,17 @@
       add(label?.innerText || control.getAttribute("aria-label") || control.textContent);
     });
     selects.forEach((select) => [...select.options].filter((option) => !option.disabled && option.value).forEach((option) => add(option.textContent)));
-    form.querySelectorAll('[role="option"], [data-testid*="answer"], [class*="answerOption" i]').forEach((option) => add(option.innerText || option.textContent));
+    form.querySelectorAll([
+      '[role="option"]',
+      '[data-testid*="answer"]',
+      '[data-testid*="option"]',
+      '[class*="answerOption" i]',
+      '[class*="choice" i]'
+    ].join(",")).forEach((option) => add(option.innerText || option.textContent));
+
+    if (!checks.length && !radios.length && !selects.length && optionTexts.length > 1) {
+      mode = "Формат ответа: на снимке есть варианты; выбери указанное в интерфейсе количество вариантов.";
+    }
 
     return {
       options: optionTexts.length ? `Варианты ответа:\n${optionTexts.map((text, index) => `${index + 1}. ${text}`).join("\n")}` : "",
